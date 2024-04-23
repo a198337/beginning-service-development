@@ -1,4 +1,5 @@
 ﻿using FluentValidation;
+using IssueTrackerApi.Services;
 using Marten;
 using Microsoft.AspNetCore.Mvc;
 
@@ -23,7 +24,7 @@ public class Api(IDocumentSession session) : ControllerBase
         }
     }
 
-    [HttpPost("/issues/{id:guid}")]
+    [HttpGet("/issues/{id:guid}")]
     public async Task<ActionResult> GetIssueByIdAsync(Guid id)
     {
         var issue = await session.Query<Issue>().SingleOrDefaultAsync(i => i.Id == id);
@@ -31,6 +32,7 @@ public class Api(IDocumentSession session) : ControllerBase
         if (issue is null)
         {
             return NotFound();
+
         }
         else
         {
@@ -65,6 +67,52 @@ public class Api(IDocumentSession session) : ControllerBase
         }
 
     }
+    [HttpPost("/issues-rpc")]
+    public async Task<ActionResult> AddIssueWithRpcAsync(
+      [FromBody] CreateIssueRequestModel request,
+      [FromServices] IValidator<CreateIssueRequestModel> validator,
+      [FromServices] SupportHttpClient client
+      )
+    {
+        var results = await validator.ValidateAsync(request);
+        if (results.IsValid)
+        {
+            var response = new Issue
+            {
+                CreatedAt = DateTimeOffset.UtcNow,
+                Description = request.Description,
+                Software = request.Software,
+                Id = Guid.NewGuid(),
+                Status = IssueStatus.Created
+            };
+            // do our thing.
+            session.Store(response);
+            await session.SaveChangesAsync();
+
+            var supportInfo = await client.GetCurrentSupportInformationAsync();
+
+            if (supportInfo != null)
+            {
+                var res = new IssueWithEmbeddedSupport
+                {
+                    Id = response.Id,
+                    CreatedAt = response.CreatedAt,
+                    Description = response.Description,
+                    Software = response.Software,
+                    Status = IssueStatus.Created,
+                    Support = supportInfo
+
+                };
+                return Ok(res);
+            }
+            return Ok(response);
+        }
+        else
+        {
+            return BadRequest(results.ToDictionary()); // 400
+        }
+
+    }
 }
 
 /*
@@ -90,6 +138,17 @@ public record Issue
     public IssueStatus Status { get; set; }
 
 }
+public record IssueWithEmbeddedSupport
+{
+    public Guid Id { get; set; }
+    public string Description { get; set; } = string.Empty;
+    public string Software { get; set; } = string.Empty;
+    public DateTimeOffset CreatedAt { get; set; }
+    public IssueStatus Status { get; set; }
+
+    public CurrentSupportResponse Support { get; set; } = new();
+}
+
 public enum IssueStatus { Created }
 
 public class CreateIssueRequestModelValidator : AbstractValidator<CreateIssueRequestModel>
